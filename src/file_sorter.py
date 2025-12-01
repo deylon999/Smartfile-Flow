@@ -137,22 +137,49 @@ class FileSorter:
 
         ocr_lang = getattr(self.config.settings, "ocr_lang", "rus+eng")
 
+        def _run_ocr(image, variant: str) -> str:
+            """Вспомогательная функция: один запуск OCR с логированием варианта."""
+            try:
+                self.logger.debug(
+                    f"Запуск OCR ({variant}) для {file_path.name} "
+                    f"({getattr(image, 'format', 'N/A')}, {image.size[0]}x{image.size[1]})"
+                )
+                raw = pytesseract.image_to_string(image, lang=ocr_lang)
+            except Exception as exc:
+                self.logger.error(f"Ошибка OCR ({variant}) для {file_path}: {exc}")
+                return ""
+
+            if not raw:
+                return ""
+
+            cleaned_inner = raw.strip()
+            return cleaned_inner
+
         try:
             with Image.open(file_path) as img:
-                self.logger.debug(f"Запуск OCR для {file_path.name} ({img.format}, {img.size[0]}x{img.size[1]})")
+                # 1) Основной режим препроцессинга (из конфига, по умолчанию advanced)
                 processed = self._preprocess_image_for_ocr(img)
-                text = pytesseract.image_to_string(processed, lang=ocr_lang)
+                cleaned = _run_ocr(processed, "preprocess=primary")
+
+                # 2) Если ничего не прочитали и режим был 'advanced' — пробуем 'simple'
+                if not cleaned and getattr(self.config.settings, "ocr_preprocess", "advanced") == "advanced":
+                    self.logger.info(f"OCR: повторная попытка в режиме 'simple' для {file_path.name}")
+                    from PIL import ImageOps  # type: ignore
+                    gray = img.convert("L")
+                    simple = ImageOps.autocontrast(gray)
+                    cleaned = _run_ocr(simple, "preprocess=simple")
+
+                # 3) Если всё ещё пусто — пробуем вообще без препроцессинга (сырой кадр)
+                if not cleaned:
+                    self.logger.info(f"OCR: финальная попытка без препроцессинга для {file_path.name}")
+                    cleaned = _run_ocr(img, "preprocess=none")
+
         except Exception as exc:
             self.logger.error(f"Ошибка OCR для {file_path}: {exc}")
             return None
 
-        if not text:
-            self.logger.warning(f"OCR не извлек текст из изображения {file_path.name}")
-            return ""
-
-        cleaned = text.strip()
         if not cleaned:
-            self.logger.warning(f"OCR вернул только пробелы для {file_path.name}")
+            self.logger.warning(f"OCR не извлек текст из изображения {file_path.name} (все варианты)")
             return ""
 
         self.logger.info(f"🖼️ OCR: извлечено {len(cleaned)} символов из {file_path.name}")
@@ -348,7 +375,17 @@ class FileSorter:
     
     def categorize_file(self, text: str) -> str:
         """Основной метод категоризации"""
-        if self.config.settings.use_ml and self.ml_classifier.is_trained:
+        # ML считаем действительно "включённым" только если:
+        # - он разрешён в конфиге
+        # - модель загружена/обучена
+        # - и есть векторы категорий (иначе фактически будем падать в правила)
+        ml_active = (
+            self.config.settings.use_ml
+            and self.ml_classifier.is_trained
+            and bool(getattr(self.ml_classifier, "category_vectors", None))
+        )
+
+        if ml_active:
             category, confidence = self.categorize_with_ml(text)
             method = "ML"
             # Для ML: косинусная близость от 0 до 1
