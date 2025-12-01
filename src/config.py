@@ -20,6 +20,13 @@ class SettingsConfig:
     use_ml: bool
     ml_confidence_threshold: float
     conflict_resolution: str  # 'skip', 'overwrite', 'rename'
+    # OCR / изображения
+    enable_ocr: bool
+    ocr_backend: str
+    ocr_lang: str
+    ocr_tesseract_cmd: Optional[str]
+    image_extensions: List[str]
+    ocr_preprocess: str  # 'none', 'simple', 'advanced'
 
 class Config:
     def __init__(self, config_path: str = "config.yaml"):
@@ -31,13 +38,20 @@ class Config:
     
     def _create_default_settings(self) -> SettingsConfig:
         return SettingsConfig(
-            supported_extensions=['.txt', '.pdf', '.docx', '.doc', '.json', '.xml'],
+            supported_extensions=['.txt', '.pdf', '.docx', '.doc', '.json', '.xml',
+                                  '.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.webp'],
             min_confidence_score=1.0,
             log_retention_days=30,
             copy_files=True,
             use_ml=False,
             ml_confidence_threshold=0.7,
-            conflict_resolution='rename'  # По умолчанию переименовываем
+            conflict_resolution='rename',  # По умолчанию переименовываем
+            enable_ocr=False,
+            ocr_backend='tesseract',
+            ocr_lang='rus+eng',
+            ocr_tesseract_cmd=None,
+            image_extensions=['.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.webp'],
+            ocr_preprocess='advanced'
         )
     
     def _load_config(self):
@@ -106,6 +120,12 @@ class Config:
                         if not isinstance(extensions, list):
                             self.logger.warning("⚠️  supported_extensions должен быть списком")
                             extensions = self.settings.supported_extensions
+
+                        # Валидация image_extensions
+                        image_extensions = settings_data.get('image_extensions', self.settings.image_extensions)
+                        if not isinstance(image_extensions, list):
+                            self.logger.warning("⚠️  image_extensions должен быть списком")
+                            image_extensions = self.settings.image_extensions
                         
                         # Валидация числовых значений
                         try:
@@ -137,6 +157,14 @@ class Config:
                         if conflict_resolution not in ['skip', 'overwrite', 'rename']:
                             self.logger.warning(f"⚠️  Неверное значение conflict_resolution '{conflict_resolution}', используется 'rename'")
                             conflict_resolution = 'rename'
+
+                        # OCR-настройки
+                        enable_ocr = bool(settings_data.get('enable_ocr', self.settings.enable_ocr))
+                        ocr_backend = str(settings_data.get('ocr_backend', self.settings.ocr_backend))
+                        ocr_lang = str(settings_data.get('ocr_lang', self.settings.ocr_lang))
+                        ocr_tesseract_cmd_raw = settings_data.get('ocr_tesseract_cmd', self.settings.ocr_tesseract_cmd)
+                        ocr_tesseract_cmd = str(ocr_tesseract_cmd_raw) if ocr_tesseract_cmd_raw not in (None, "") else None
+                        ocr_preprocess = str(settings_data.get('ocr_preprocess', self.settings.ocr_preprocess))
                         
                         self.settings = SettingsConfig(
                             supported_extensions=extensions,
@@ -145,7 +173,13 @@ class Config:
                             copy_files=bool(settings_data.get('copy_files', self.settings.copy_files)),
                             use_ml=bool(settings_data.get('use_ml', self.settings.use_ml)),
                             ml_confidence_threshold=ml_threshold,
-                            conflict_resolution=conflict_resolution
+                            conflict_resolution=conflict_resolution,
+                            enable_ocr=enable_ocr,
+                            ocr_backend=ocr_backend,
+                            ocr_lang=ocr_lang,
+                            ocr_tesseract_cmd=ocr_tesseract_cmd,
+                            image_extensions=image_extensions,
+                            ocr_preprocess=ocr_preprocess
                         )
                     except Exception as e:
                         self.logger.error(f"❌ Ошибка при загрузке настроек: {e}, используются значения по умолчанию")

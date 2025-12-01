@@ -8,3 +8,5 @@ gensim==4.4.0
 tqdm==4.66.1
 defusedxml==0.7.1
 pytest==9.0.1
+Pillow==12.0.0
+pytesseract==0.3.13

@@ -46,6 +46,8 @@ class TestMLModel(unittest.TestCase):
         vector = self.classifier.text_to_vector(text)
         
         self.assertIsNotNone(vector, "Вектор должен быть создан")
+        # После проверки на None явно приводим к np.ndarray для статического анализатора
+        assert vector is not None
         self.assertEqual(len(vector), 100, "Размер вектора должен быть 100")
         self.assertIsInstance(vector, np.ndarray, "Вектор должен быть numpy array")
     

@@ -48,10 +48,17 @@ categories:
     description: "Прочие файлы"
 
 settings:
-  supported_extensions: [".txt", ".pdf", ".docx", ".doc", ".json", ".xml"]
+  supported_extensions: [".txt", ".pdf", ".docx", ".doc", ".json", ".xml", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"]
   min_confidence_score: 1.0
   log_retention_days: 30
   copy_files: true
   use_ml: true 
   ml_confidence_threshold: 0.3
   conflict_resolution: "rename"  # Варианты: "skip", "overwrite", "rename"
+  # OCR / изображения
+  enable_ocr: true          # Включить OCR-обработку изображений
+  ocr_backend: "tesseract"   # Пока поддерживаем только tesseract
+  ocr_lang: "rus+eng"        # Языки для OCR
+  ocr_tesseract_cmd: "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"      # Путь к tesseract.exe (Windows)
+  image_extensions: [".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"]
+  ocr_preprocess: "advanced"  # 'none' | 'simple' | 'advanced' (рекомендуется 'advanced')

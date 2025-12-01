@@ -6,6 +6,7 @@ import json
 import tempfile
 import shutil
 from pathlib import Path
+from unittest import mock
 
 # Добавляем src в путь
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -44,7 +45,8 @@ class TestFileSorter(unittest.TestCase):
         text = self.sorter.extract_text_from_file(test_file)
         
         self.assertIsNotNone(text, "Текст должен быть извлечен")
-        self.assertIn("тестовый", text.lower(), "Текст должен содержать содержимое файла")
+        text_str = str(text)
+        self.assertIn("тестовый", text_str.lower(), "Текст должен содержать содержимое файла")
     
     def test_extract_text_from_empty_file(self):
         """Тест извлечения текста из пустого файла"""
@@ -115,8 +117,9 @@ class TestFileSorter(unittest.TestCase):
         text = self.sorter.extract_text_from_file(test_file)
         
         self.assertIsNotNone(text, "JSON должен быть прочитан")
-        self.assertIn("Работа", text, "Должен содержаться текст из JSON")
-        self.assertIn("1000", text, "Числовые значения тоже должны попадать в результат")
+        text_str = str(text)
+        self.assertIn("Работа", text_str, "Должен содержаться текст из JSON")
+        self.assertIn("1000", text_str, "Числовые значения тоже должны попадать в результат")
     
     def test_extract_text_from_xml(self):
         """Тест извлечения текста из XML файла"""
@@ -133,11 +136,47 @@ class TestFileSorter(unittest.TestCase):
         text = self.sorter.extract_text_from_file(test_file)
         
         self.assertIsNotNone(text, "XML должен быть прочитан")
-        self.assertIn("Финансы", text, "Текстовые узлы должны извлекаться")
-        self.assertIn("2000", text, "Атрибуты должны извлекаться")
+        text_str = str(text)
+        self.assertIn("Финансы", text_str, "Текстовые узлы должны извлекаться")
+        self.assertIn("2000", text_str, "Атрибуты должны извлекаться")
+
+    def test_extract_text_from_image_ocr_disabled(self):
+        """Если OCR выключен, изображения не должны падать и возвращают None/other"""
+        # Создаем фейковое изображение по расширению
+        test_file = self.source_dir / "image.png"
+        test_file.write_bytes(b"\x89PNG\r\n\x1a\n")  # минимальный заголовок PNG
+
+        # Явно выключаем OCR
+        self.sorter.config.settings.enable_ocr = False
+
+        text = self.sorter.extract_text_from_file(test_file)
+
+        # При выключенном OCR экстрактор изображений возвращает None
+        self.assertIsNone(text, "При отключенном OCR изображение должно возвращать None")
+
+    def test_extract_text_from_image_with_ocr_mock(self):
+        """Проверяем, что при включенном OCR вызывается pytesseract (мокаем его)"""
+        test_file = self.source_dir / "image.jpg"
+        test_file.write_bytes(b"\xff\xd8\xff\xe0" + b"0" * 100)  # заголовок JPEG + мусор
+
+        self.sorter.config.settings.enable_ocr = True
+
+        # Мокаем pytesseract и PIL.Image, чтобы не требовать реальный tesseract
+        with mock.patch("file_sorter.Image") as mock_image_cls, \
+             mock.patch("file_sorter.pytesseract") as mock_pytesseract:
+
+            mock_img_instance = mock.Mock()
+            mock_image_cls.open.return_value.__enter__.return_value = mock_img_instance
+            mock_pytesseract.image_to_string.return_value = "WORK TEST"
+
+            text = self.sorter.extract_text_from_file(test_file)
+
+            self.assertIsNotNone(text)
+            text_str = str(text)
+            self.assertIn("WORK", text_str)
     
     def test_resolve_conflict_rename(self):
-        """Тест разрешения конфликта с переименованием"""
+        """Тест разрешения конфликта с переименованием""" 
         # Создаем существующий файл
         existing_file = self.target_dir / "work" / "test.txt"
         existing_file.parent.mkdir(exist_ok=True)

@@ -34,6 +34,130 @@ class FileSorter:
             category_path = self.target_dir / category_name
             category_path.mkdir(parents=True, exist_ok=True)
     
+    def _preprocess_image_for_ocr(self, img):
+        """
+        Современный препроцессинг изображения перед OCR.
+
+        Шаги (режим 'advanced'):
+        - конвертация в grayscale
+        - мягкая нормализация контраста (autocontrast)
+        - адаптивная бинаризация (через numpy)
+        - лёгкая фильтрация шума
+        - масштабирование до разумного размера (для мелких сканов)
+        """
+        from PIL import ImageFilter, ImageOps  # type: ignore
+        import numpy as np  # type: ignore
+
+        mode = getattr(self.config.settings, "ocr_preprocess", "advanced")
+        if mode == "none":
+            return img
+
+        # 1. Grayscale
+        gray = img.convert("L")
+
+        if mode in ("simple", "advanced"):
+            # 2. Лёгкая нормализация контраста
+            gray = ImageOps.autocontrast(gray)
+
+        if mode == "simple":
+            # Простая бинаризация + небольшое размытие для сглаживания
+            bw = gray.point(lambda x: 0 if x < 128 else 255, "1")
+            bw = bw.filter(ImageFilter.MedianFilter(size=3))
+            return bw
+
+        # --- advanced ---
+        # 3. Адаптивная бинаризация (Otsu-подобный подход)
+        arr = np.array(gray)
+        # Вычисляем порог по гистограмме
+        hist, bin_edges = np.histogram(arr, bins=256, range=(0, 255))
+        total = arr.size
+        sum_total = np.dot(hist, np.arange(256))
+
+        sum_b = 0.0
+        w_b = 0.0
+        maximum = 0.0
+        threshold = 127
+
+        for t in range(256):
+            w_b += hist[t]
+            if w_b == 0:
+                continue
+            w_f = total - w_b
+            if w_f == 0:
+                break
+            sum_b += t * hist[t]
+            m_b = sum_b / w_b
+            m_f = (sum_total - sum_b) / w_f
+            var_between = w_b * w_f * (m_b - m_f) ** 2
+            if var_between > maximum:
+                maximum = var_between
+                threshold = t
+
+        bw = gray.point(lambda x: 0 if x < threshold else 255, "L")
+
+        # 4. Фильтрация шума (медианный фильтр)
+        bw = bw.filter(ImageFilter.MedianFilter(size=3))
+
+        # 5. Масштабирование для мелкого текста
+        max_side = max(bw.size)
+        if max_side < 1200:
+            scale = 1200 / float(max_side)
+            new_size = (int(bw.size[0] * scale), int(bw.size[1] * scale))
+            bw = bw.resize(new_size)
+
+        return bw
+    
+    def _extract_text_from_image(self, file_path: Path) -> Optional[str]:
+        """Извлекает текст из изображения с помощью OCR
+        
+        Поведение:
+        - зависит от настроек OCR в config.yaml
+        - использует pytesseract + Pillow
+        - при ошибках не ломает пайплайн, а возвращает None
+        """
+        # Проверяем, включен ли OCR
+        if not getattr(self.config.settings, "enable_ocr", False):
+            self.logger.debug(f"OCR отключен в настройках, файл {file_path.name} будет обработан как 'other'")
+            return None
+
+        try:
+            import pytesseract  # type: ignore
+            from PIL import Image  # type: ignore
+        except ImportError:
+            self.logger.warning("OCR недоступен: не установлены pytesseract/Pillow")
+            return None
+
+        # Настройка пути к tesseract (особенно актуально для Windows)
+        tesseract_cmd = getattr(self.config.settings, "ocr_tesseract_cmd", None)
+        if tesseract_cmd:
+            try:
+                pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+            except Exception as exc:
+                self.logger.warning(f"Не удалось применить ocr_tesseract_cmd '{tesseract_cmd}': {exc}")
+
+        ocr_lang = getattr(self.config.settings, "ocr_lang", "rus+eng")
+
+        try:
+            with Image.open(file_path) as img:
+                self.logger.debug(f"Запуск OCR для {file_path.name} ({img.format}, {img.size[0]}x{img.size[1]})")
+                processed = self._preprocess_image_for_ocr(img)
+                text = pytesseract.image_to_string(processed, lang=ocr_lang)
+        except Exception as exc:
+            self.logger.error(f"Ошибка OCR для {file_path}: {exc}")
+            return None
+
+        if not text:
+            self.logger.warning(f"OCR не извлек текст из изображения {file_path.name}")
+            return ""
+
+        cleaned = text.strip()
+        if not cleaned:
+            self.logger.warning(f"OCR вернул только пробелы для {file_path.name}")
+            return ""
+
+        self.logger.info(f"🖼️ OCR: извлечено {len(cleaned)} символов из {file_path.name}")
+        return cleaned
+    
     def _read_text_with_encoding(self, file_path: Path) -> Optional[str]:
         """Читает текстовый файл, определяя кодировку"""
         try:
@@ -163,6 +287,10 @@ class FileSorter:
             
             elif file_ext == '.xml':
                 return self._extract_text_from_xml(file_path)
+
+            # Изображения — обрабатываем через OCR (если включен)
+            elif file_ext in getattr(self.config.settings, "image_extensions", []):
+                return self._extract_text_from_image(file_path)
                 
             else:
                 self.logger.warning(f"Неподдерживаемый формат файла: {file_ext}")
