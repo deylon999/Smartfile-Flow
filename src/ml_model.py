@@ -1,7 +1,7 @@
 import gensim
 from gensim.models import KeyedVectors
 import numpy as np
-from typing import List, Dict, Optional, Tuple, Any, Union  # ✅ Добавили Union
+from typing import List, Dict, Optional, Tuple, Any  # тип модели упростим до Any для совместимости с Pylance
 from pathlib import Path
 import json
 from logger import get_logger
@@ -10,12 +10,14 @@ class MLClassifier:
     def __init__(self, models_dir: str = "models", use_pretrained: bool = True):
         self.logger = get_logger()
         # Модель может быть Word2Vec или KeyedVectors
-        self.model: Optional[Union[gensim.models.Word2Vec, KeyedVectors]] = None
+        # Используем Any, чтобы избежать конфликтов с разными версиями gensim и статическим анализатором
+        self.model: Optional[Any] = None
         self.is_trained = False
         self.category_vectors: Dict[str, np.ndarray] = {}
         self.models_dir = Path(models_dir)
         self.use_pretrained = use_pretrained
         self.is_pretrained = False  # Флаг для предобученной модели
+        self._shape_warning_emitted = False
         
     def train_word2vec(self, training_data: Dict[str, List[str]]) -> bool:
         """Обучает Word2Vec модель на текстах категорий"""
@@ -78,58 +80,109 @@ class MLClassifier:
     
     def _get_word_vectors(self, word: str) -> Optional[np.ndarray]:
         """Получает вектор слова, учитывая тип модели (Word2Vec или KeyedVectors)"""
+        # Если модель не загружена – вектора нет
+        if self.model is None:
+            return None
+        
         if self.is_pretrained:
             # Предобученная модель (KeyedVectors)
-            if word in self.model.key_to_index:
-                return self.model[word]
+            if hasattr(self.model, "key_to_index") and word in self.model.key_to_index:
+                return self.model[word]  # type: ignore[index]
         else:
             # Обычная модель (Word2Vec)
             if hasattr(self.model, 'wv') and word in self.model.wv.key_to_index:
-                return self.model.wv[word]
+                return self.model.wv[word]  # type: ignore[union-attr]
         return None
     
+    def _expected_vector_size(self) -> int:
+        """Возвращает ожидаемую размерность векторов для текущей модели"""
+        if self.model is None:
+            return 0
+        if self.is_pretrained:
+            return getattr(self.model, 'vector_size', 0)
+        if hasattr(self.model, 'wv'):
+            return getattr(self.model.wv, 'vector_size', 0)
+        return getattr(self.model, 'vector_size', 0)
+    
+    def _validate_category_vectors(self):
+        """Проверяет, что сохраненные векторы категорий подходят текущей модели"""
+        expected_size = self._expected_vector_size()
+        if expected_size == 0 or not self.category_vectors:
+            return
+        
+        invalid_categories = [
+            category for category, vector in self.category_vectors.items()
+            if len(vector) != expected_size
+        ]
+        
+        if invalid_categories:
+            for category in invalid_categories:
+                self.logger.warning(
+                    f"⚠️  Вектор категории '{category}' имеет размер {len(self.category_vectors[category])}, "
+                    f"но модель ожидает {expected_size}. Вектор будет удален."
+                )
+                self.category_vectors.pop(category, None)
+            
+            if not self.category_vectors:
+                self.logger.error(
+                    "❌ Ни один вектор категории не соответствует размеру модели. "
+                    "ML классификация будет отключена до пересоздания векторов."
+                )
     def _find_word_in_vocab(self, word: str) -> Optional[str]:
         """Ищет слово в словаре, возвращает найденный вариант"""
+        model = self.model
+        if model is None:
+            return None
+
         # Прямой поиск
         if self.is_pretrained:
-            if word in self.model.key_to_index:
+            key_index = getattr(model, "key_to_index", {})
+            if word in key_index:
                 return word
         else:
-            if hasattr(self.model, 'wv') and word in self.model.wv.key_to_index:
-                return word
-        
+            if hasattr(model, "wv"):
+                key_index = getattr(model.wv, "key_to_index", {})
+                if word in key_index:
+                    return word
+
+        # Набор морфологических тегов (используется только для предобученной модели)
+        tags = ['_NOUN', '_VERB', '_ADJ', '_ADV', '_PRON', '_DET', '_PREP', '_CONJ']
+
         # Если предобученная модель с морфологическими тегами
         if self.is_pretrained:
+            key_index = getattr(model, "key_to_index", {})
             # Пробуем варианты с тегами
-            tags = ['_NOUN', '_VERB', '_ADJ', '_ADV', '_PRON', '_DET', '_PREP', '_CONJ']
             for tag in tags:
                 word_with_tag = word + tag
-                if word_with_tag in self.model.key_to_index:
+                if word_with_tag in key_index:
                     return word_with_tag
-        
+
         # Пытаемся найти базовые формы (упрощенная лемматизация)
         variants = [
             word,  # оригинал
             word.rstrip('уеыаоэяию'),  # без последней гласной
             word.rstrip('уеыаоэяию').rstrip('уеыаоэяию'),  # без двух последних гласных
         ]
-        
+
         for variant in variants:
             if not variant:
                 continue
-                
+
             if self.is_pretrained:
-                if variant in self.model.key_to_index:
+                key_index = getattr(model, "key_to_index", {})
+                if variant in key_index:
                     return variant
                 # Пробуем с тегами
                 for tag in tags:
                     variant_with_tag = variant + tag
-                    if variant_with_tag in self.model.key_to_index:
+                    if variant_with_tag in key_index:
                         return variant_with_tag
             else:
-                if hasattr(self.model, 'wv') and variant in self.model.wv.key_to_index:
-                    return variant
-        
+                if hasattr(model, "wv"):
+                    key_index = getattr(model.wv, "key_to_index", {})
+                    if variant in key_index:
+                        return variant
+
         return None
     
     def text_to_vector(self, text: str) -> Optional[np.ndarray]:
@@ -191,6 +244,15 @@ class MLClassifier:
     
     def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
         """Вычисляет косинусную близость между векторами"""
+        if vec1.shape != vec2.shape:
+            if not self._shape_warning_emitted:
+                self.logger.warning(
+                    f"⚠️  Несовместимые размеры векторов для cosine similarity: "
+                    f"{vec1.shape} vs {vec2.shape}. Возвращаю 0."
+                )
+                self._shape_warning_emitted = True
+            return 0.0
+        
         dot_product = np.dot(vec1, vec2)
         norm1 = np.linalg.norm(vec1)
         norm2 = np.linalg.norm(vec2)
@@ -272,10 +334,14 @@ class MLClassifier:
             try:
                 self.model = KeyedVectors.load(str(model_path))
                 self.is_pretrained = True
+                model = self.model
                 self.logger.info(f"📥 Предобученная модель загружена: {model_name}")
-                self.logger.info(f"   Размер словаря: {len(self.model.key_to_index)} слов")
-                self.logger.info(f"   Размер вектора: {self.model.vector_size}")
-            except:
+                if model is not None:
+                    vocab_size = len(getattr(model, "key_to_index", {}))
+                    vector_size = getattr(model, "vector_size", 0)
+                    self.logger.info(f"   Размер словаря: {vocab_size} слов")
+                    self.logger.info(f"   Размер вектора: {vector_size}")
+            except Exception:
                 # Если не KeyedVectors, пробуем как Word2Vec
                 self.model = gensim.models.Word2Vec.load(str(model_path))
                 self.is_pretrained = False
@@ -307,10 +373,11 @@ class MLClassifier:
                                 category: np.array(vector) 
                                 for category, vector in vectors_data.items()
                             }
+                            self._validate_category_vectors()
                             if self.category_vectors:
-                                self.logger.info(f"📥 Векторы категорий загружены: {list(vectors_data.keys())}")
+                                self.logger.info(f"📥 Векторы категорий загружены: {list(self.category_vectors.keys())}")
                             else:
-                                self.logger.warning("Векторы категорий пустые - нужно создать")
+                                self.logger.warning("Векторы категорий пустые или несовместимы - нужно создать")
                         else:
                             self.logger.warning("Векторы категорий не найдены - нужно создать")
                         return True
@@ -336,7 +403,11 @@ class MLClassifier:
                     category: np.array(vector) 
                     for category, vector in vectors_data.items()
                 }
-                self.logger.info(f"📥 Векторы категорий загружены: {list(vectors_data.keys())}")
+                self._validate_category_vectors()
+                if self.category_vectors:
+                    self.logger.info(f"📥 Векторы категорий загружены: {list(self.category_vectors.keys())}")
+                else:
+                    self.logger.warning("Векторы категорий отсутствуют или несовместимы")
             else:
                 self.logger.warning("Векторы категорий не найдены")
                 self.category_vectors = {}
@@ -355,12 +426,16 @@ class MLClassifier:
         
         # Определяем размер словаря и вектора в зависимости от типа модели
         if self.is_pretrained:
-            vocab_size = len(self.model.key_to_index)
-            vector_size = self.model.vector_size
+            vocab_size = len(getattr(self.model, "key_to_index", {}))
+            vector_size = getattr(self.model, "vector_size", 0)
             model_type = "pretrained (KeyedVectors)"
         else:
-            vocab_size = len(self.model.wv.key_to_index) if hasattr(self.model, 'wv') else 0
-            vector_size = self.model.vector_size if hasattr(self.model, 'vector_size') else 0
+            if hasattr(self.model, "wv"):
+                vocab_size = len(getattr(self.model.wv, "key_to_index", {}))
+                vector_size = getattr(self.model.wv, "vector_size", 0)
+            else:
+                vocab_size = 0
+                vector_size = getattr(self.model, "vector_size", 0)
             model_type = "trained (Word2Vec)"
         
         return {

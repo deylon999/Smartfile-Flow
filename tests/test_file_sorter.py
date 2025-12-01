@@ -2,6 +2,7 @@
 Тесты для FileSorter
 """
 import sys
+import json
 import tempfile
 import shutil
 from pathlib import Path
@@ -97,6 +98,43 @@ class TestFileSorter(unittest.TestCase):
         files = self.sorter.scan_directory()
         
         self.assertEqual(len(files), 0, "Пустая директория должна вернуть пустой список")
+    
+    def test_extract_text_from_json(self):
+        """Тест извлечения текста из JSON файла"""
+        test_file = self.source_dir / "data.json"
+        payload = {
+            "project": "Работа",
+            "tasks": [
+                {"name": "задача", "status": "done"},
+                {"name": "встреча", "status": "scheduled"}
+            ],
+            "budget": 1000
+        }
+        test_file.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+        
+        text = self.sorter.extract_text_from_file(test_file)
+        
+        self.assertIsNotNone(text, "JSON должен быть прочитан")
+        self.assertIn("Работа", text, "Должен содержаться текст из JSON")
+        self.assertIn("1000", text, "Числовые значения тоже должны попадать в результат")
+    
+    def test_extract_text_from_xml(self):
+        """Тест извлечения текста из XML файла"""
+        test_file = self.source_dir / "data.xml"
+        xml_content = """<?xml version="1.0" encoding="utf-8"?>
+        <root>
+            <title>Финансы</title>
+            <item amount="2000">бюджет</item>
+            <item>оплата</item>
+        </root>
+        """
+        test_file.write_text(xml_content, encoding='utf-8')
+        
+        text = self.sorter.extract_text_from_file(test_file)
+        
+        self.assertIsNotNone(text, "XML должен быть прочитан")
+        self.assertIn("Финансы", text, "Текстовые узлы должны извлекаться")
+        self.assertIn("2000", text, "Атрибуты должны извлекаться")
     
     def test_resolve_conflict_rename(self):
         """Тест разрешения конфликта с переименованием"""

@@ -133,6 +133,28 @@ class TestMLModel(unittest.TestCase):
         self.assertGreater(info['vocabulary_size'], 0)
         self.assertEqual(info['vector_size'], 100)
         self.assertIn('categories', info)
+    
+    def test_cosine_similarity_dimension_mismatch(self):
+        """Проверяем, что косинус не падает при разной длине векторов"""
+        vec1 = np.zeros(100)
+        vec2 = np.zeros(50)
+        result = self.classifier._cosine_similarity(vec1, vec2)
+        self.assertEqual(result, 0.0)
+    
+    def test_validate_category_vectors_mismatch(self):
+        """Несовместимые векторы категорий должны удаляться"""
+        class DummyModel:
+            def __init__(self, vector_size):
+                self.vector_size = vector_size
+        self.classifier.model = DummyModel(vector_size=300)
+        self.classifier.is_pretrained = True
+        self.classifier.category_vectors = {
+            'work': np.zeros(100),
+            'finance': np.zeros(300)
+        }
+        self.classifier._validate_category_vectors()
+        self.assertIn('finance', self.classifier.category_vectors)
+        self.assertNotIn('work', self.classifier.category_vectors)
 
 
 if __name__ == '__main__':

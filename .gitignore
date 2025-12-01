@@ -40,6 +40,7 @@ Thumbs.db
 # Тестовые папки
 data/sorted_test*/
 data/*_test*/
+**/.pytest_cache/
 
 # Временные файлы
 *.tmp

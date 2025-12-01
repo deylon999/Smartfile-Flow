@@ -1,7 +1,8 @@
+import json
 import os
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from logger import get_logger
 from config import get_config
 from ml_model import MLClassifier
@@ -33,18 +34,105 @@ class FileSorter:
             category_path = self.target_dir / category_name
             category_path.mkdir(parents=True, exist_ok=True)
     
+    def _read_text_with_encoding(self, file_path: Path) -> Optional[str]:
+        """Читает текстовый файл, определяя кодировку"""
+        try:
+            import chardet
+            with open(file_path, 'rb') as f:
+                raw_data = f.read()
+        except FileNotFoundError:
+            self.logger.error(f"Файл не найден: {file_path}")
+            return None
+        except OSError as exc:
+            self.logger.error(f"Ошибка чтения {file_path}: {exc}")
+            return None
+        
+        if not raw_data:
+            return ""
+        
+        encoding = chardet.detect(raw_data).get('encoding') or 'utf-8'
+        try:
+            return raw_data.decode(encoding, errors='ignore')
+        except LookupError:
+            self.logger.warning(f"Неизвестная кодировка '{encoding}' для {file_path}, используется UTF-8")
+            return raw_data.decode('utf-8', errors='ignore')
+    
+    def _collect_json_text(self, data: Any, collector: List[str], depth: int = 0, max_depth: int = 32):
+        """Рекурсивно собирает текст из JSON, ограничивая глубину"""
+        if depth > max_depth:
+            return
+        
+        if isinstance(data, dict):
+            for key, value in data.items():
+                collector.append(str(key))
+                self._collect_json_text(value, collector, depth + 1, max_depth)
+        elif isinstance(data, (list, tuple, set)):
+            for item in data:
+                self._collect_json_text(item, collector, depth + 1, max_depth)
+        elif data is None:
+            return
+        else:
+            collector.append(str(data))
+    
+    def _extract_text_from_json(self, file_path: Path) -> Optional[str]:
+        """Извлекает текст из JSON файла"""
+        decoded_text = self._read_text_with_encoding(file_path)
+        if decoded_text is None:
+            return None
+        if not decoded_text.strip():
+            return ""
+        
+        try:
+            payload = json.loads(decoded_text)
+        except json.JSONDecodeError as exc:
+            self.logger.error(f"Ошибка разбора JSON {file_path}: {exc}")
+            return None
+        
+        collected: List[str] = []
+        self._collect_json_text(payload, collected)
+        return " ".join(collected).strip()
+    
+    def _extract_text_from_xml(self, file_path: Path) -> Optional[str]:
+        """Извлекает текст из XML файла с безопасным парсером"""
+        try:
+            from defusedxml import ElementTree as ET
+            parser_name = "defusedxml"
+        except ImportError:
+            import xml.etree.ElementTree as ET
+            parser_name = "xml.etree"
+            self.logger.warning("defusedxml не установлен, используется стандартный XML-парсер")
+        
+        try:
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+        except (ET.ParseError, OSError) as exc:
+            self.logger.error(f"Ошибка разбора XML {file_path}: {exc}")
+            return None
+        
+        if root is None:
+            self.logger.debug(f"XML файл {file_path} ({parser_name}): корневой элемент отсутствует")
+            return ""
+        
+        fragments: List[str] = []
+        for elem in list(root.iter()):
+            if elem.text and elem.text.strip():
+                fragments.append(elem.text.strip())
+            for attr_val in elem.attrib.values():
+                if attr_val:
+                    fragments.append(str(attr_val))
+            if elem.tail and elem.tail.strip():
+                fragments.append(elem.tail.strip())
+        
+        if not fragments:
+            self.logger.debug(f"XML файл {file_path} ({parser_name}) не содержит текста")
+        return " ".join(fragments).strip()
+    
     def extract_text_from_file(self, file_path: Path) -> Optional[str]:
         try:
             file_ext = file_path.suffix.lower()
             
             if file_ext == '.txt':
-                import chardet
-                with open(file_path, 'rb') as f:
-                    raw_data = f.read()
-                    encoding = chardet.detect(raw_data)['encoding'] or 'utf-8'
-                
-                with open(file_path, 'r', encoding=encoding, errors='ignore') as f:
-                    return f.read()
+                return self._read_text_with_encoding(file_path)
                     
             elif file_ext == '.pdf':
                 try:
@@ -69,6 +157,12 @@ class FileSorter:
                 doc = docx.Document(str(file_path))
                 text = ' '.join([paragraph.text for paragraph in doc.paragraphs])
                 return text
+            
+            elif file_ext == '.json':
+                return self._extract_text_from_json(file_path)
+            
+            elif file_ext == '.xml':
+                return self._extract_text_from_xml(file_path)
                 
             else:
                 self.logger.warning(f"Неподдерживаемый формат файла: {file_ext}")
@@ -169,7 +263,8 @@ class FileSorter:
         """Логирует сообщение с поддержкой tqdm"""
         try:
             from tqdm import tqdm
-            if hasattr(tqdm, '_instances') and len(tqdm._instances) > 0:
+            instances = getattr(tqdm, "_instances", None)
+            if instances is not None and len(instances) > 0:
                 tqdm.write(message)
                 # Также логируем в обычный логгер для файла
                 if level == 'warning':
@@ -327,6 +422,15 @@ class FileSorter:
             file_iterator = files
             use_progress_bar = False
         
+        # Явно говорим типизатору, что когда use_progress_bar=True, у нас есть tqdm-объект
+        progress_bar = None
+        try:
+            from tqdm import tqdm  # type: ignore
+            if use_progress_bar and isinstance(file_iterator, tqdm):
+                progress_bar = file_iterator  # type: ignore[assignment]
+        except ImportError:
+            progress_bar = None
+
         for file_path in file_iterator:
             # Определяем категорию для статистики (до перемещения)
             text = self.extract_text_from_file(file_path)
@@ -351,8 +455,8 @@ class FileSorter:
                 failed_count += 1
             
             # Обновляем прогресс-бар
-            if use_progress_bar:
-                file_iterator.set_postfix({
+            if progress_bar is not None:
+                progress_bar.set_postfix({
                     '✅': sorted_count,
                     '⏭️': skipped_count,
                     '❌': failed_count

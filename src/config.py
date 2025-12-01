@@ -31,7 +31,7 @@ class Config:
     
     def _create_default_settings(self) -> SettingsConfig:
         return SettingsConfig(
-            supported_extensions=['.txt', '.pdf', '.docx', '.doc'],
+            supported_extensions=['.txt', '.pdf', '.docx', '.doc', '.json', '.xml'],
             min_confidence_score=1.0,
             log_retention_days=30,
             copy_files=True,
@@ -166,7 +166,7 @@ class Config:
                 # ... остальные категории
             },
             'settings': {
-                'supported_extensions': ['.txt', '.pdf', '.docx', '.doc'],
+                'supported_extensions': ['.txt', '.pdf', '.docx', '.doc', '.json', '.xml'],
                 'min_confidence_score': 1.0,
                 'log_retention_days': 30,
                 'copy_files': True,
