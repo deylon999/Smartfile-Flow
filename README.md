@@ -65,7 +65,6 @@ python -m gui.main
 ## 📌 Требования
 
 * Python **3.10+**
-* ~**500 MB RAM** (с подключённой предобученной моделью Word2Vec ruscorpora — TODO: добавить ссылку)
 * Скачайте предобученные модели (архив `models/`, веса Word2Vec, category vectors) по одной из зеркальных ссылок: [Google Drive](https://drive.google.com/drive/folders/1v7RPGwrqUGWRnRGiTzeD7jWU0aFnrYzJ?usp=drive_link) / [MEGA](https://mega.nz/file/zAU2RLyL#C6nHtqqsxf0aby25W0sl9ZeSteLATqOBLhlslbBSPOg). Разместите содержимое в папке `models/` в корне проекта.
 
 ---
